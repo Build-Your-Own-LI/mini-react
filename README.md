@@ -1,18 +1,7 @@
 # mini-react
 
 参考：
-https://webdeveloper.beehiiv.com/p/build-react-400-lines-code
-
-上記ではビルド時に
-```json
-"jsx": "react-jsx"
-```
-を用いており、React依存になっていたため、
-```json
-"jsx": "preserve"
-```
-とすることでReact依存を引きはがした。("react"でもreactライブラリへの依存はないが、こっちの方がBuild-Your-Ownぽかった)
-
-[公式](https://www.typescriptlang.org/tsconfig/#jsx)
+- [Build Your Own React.js in 400 Lines of Code](https://webdeveloper.beehiiv.com/p/build-react-400-lines-code)
+- [Reactを自作しよう](https://zenn.dev/akatsuki/articles/a2cbd26488fa151b828b)
 
 ついでにyarn PnPも使ってみた
