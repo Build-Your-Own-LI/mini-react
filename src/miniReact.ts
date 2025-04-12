@@ -14,6 +14,9 @@ declare global {
 			h1: {
 				title?: string;
 			};
+			h2: {
+				title?: string;
+			};
 			a: {
 				href: string;
 			};
@@ -24,28 +27,14 @@ declare global {
 	}
 }
 
-abstract class Component {
-	props: Record<string, unknown>;
-	abstract state: unknown;
-	abstract setState: (newState: unknown) => void;
-	abstract render: () => VirtualElement;
+// クラスコンポーネントは扱わない
+type ComponentFunction = (props: Record<string, unknown>) => NodeChild; // 関数コンポーネント
 
-	constructor(props: Record<string, unknown>) {
-		this.props = props;
-	}
-
-	// クラスコンポーネントかどうか
-	static REACT_COMPONENT = true;
-}
-
-interface ComponentFunction {
-	new (props: Record<string, unknown>): Component; // クラスコンポーネント
-	(props: Record<string, unknown>): NodeChild; // 関数コンポーネント
-}
+const FragmentSymbol = Symbol.for("react.fragment");
 
 // タグ(divなど)またはコンポーネントを表す型
 // JSXで書かれた要素は、最終的にこの型に変換される
-type VirtualElementType = string | ComponentFunction;
+type VirtualElementType = symbol | string | ComponentFunction;
 
 interface VirtualElementProps {
 	children?: VirtualElement[];
@@ -109,14 +98,24 @@ const createElement = (
 	},
 });
 
-const createDom = (fiber: FiberNode): FiberNodeDOM => {
-	const nodeType = fiber.nodeType;
-	// propsはpropertiesからループで入れるというフローを統一化するために、TextNodeも空文字で初期化する
-	// TODO: フラグメントやカスタムコンポーネントはサポートしていない
+export function Fragment({
+	children,
+}: { children: NodeChild[] }): VirtualElement {
+	return {
+		nodeType: FragmentSymbol,
+		props: {
+			children: children.map((child) =>
+				isVirtualElement(child) ? child : createTextElement(child),
+			),
+		},
+	};
+}
+
+const createDom = (nodeType: string, fiber: FiberNode): FiberNodeDOM => {
 	const dom =
 		nodeType === TEXT_ELEMENT
 			? document.createTextNode("")
-			: document.createElement(nodeType as string);
+			: document.createElement(nodeType);
 
 	const properties = Object.keys(fiber.props).filter(isVirtualElementProperty);
 
@@ -219,7 +218,7 @@ const reconcileChildren = (wipFiber: FiberNode, elements: VirtualElement[]) => {
 			newFiber = {
 				nodeType: element.nodeType,
 				props: element.props,
-				dom: null,
+				dom: null, // domはまだ作成されていないのでnull
 				child: null,
 				sibling: null,
 				parent: wipFiber,
@@ -247,13 +246,36 @@ const reconcileChildren = (wipFiber: FiberNode, elements: VirtualElement[]) => {
 
 // ツリー全体のレンダリングが完了する前にブラウザが中断されうるので、実DOMへの反映は最後にやる
 const performUnitOfWork = (fiber: FiberNode) => {
-	if (fiber.dom == null) {
-		fiber.dom = createDom(fiber);
+	const { nodeType } = fiber;
+	switch (typeof nodeType) {
+		// 関数コンポーネントの場合
+		case "function": {
+			const child = nodeType(fiber.props);
+			const children = isVirtualElement(child)
+				? [child]
+				: [createTextElement(child)];
+			reconcileChildren(fiber, children);
+			break;
+		}
+		// タグの場合
+		case "string":
+			if (fiber.dom == null) {
+				fiber.dom = createDom(nodeType, fiber);
+			}
+			reconcileChildren(fiber, fiber.props.children ?? []);
+			break;
+		case "symbol":
+			// Fragmentの場合
+			if (nodeType === FragmentSymbol) {
+				reconcileChildren(fiber, fiber.props.children ?? []);
+			}
+			break;
+		default:
+			if (typeof fiber.props !== "undefined") {
+				reconcileChildren(fiber, fiber.props.children ?? []);
+			}
+			break;
 	}
-
-	// fiberのchildrenのFiberNodeを構成する
-	const elements = fiber.props.children ?? [];
-	reconcileChildren(fiber, elements);
 
 	if (fiber.child != null) {
 		return fiber.child;
@@ -272,18 +294,36 @@ let wipRoot: FiberNode | null = null;
 let currentRoot: FiberNode | null = null;
 
 const commitWork = (fiber: FiberNode) => {
-	const domParent = fiber.parent?.dom;
-	if (domParent == null || fiber.dom == null) return;
-	if (fiber.effectTag === "PLACEMENT") {
+	let domParentFiber: FiberNode | null = fiber.parent;
+	// フラグメントや関数コンポーネントはDOMノードを持たないので、見つかるまで親を辿る
+	while (domParentFiber != null && domParentFiber.dom == null) {
+		domParentFiber = domParentFiber.parent;
+	}
+	const domParent = domParentFiber?.dom;
+	if (domParent == null) return;
+
+	if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
 		domParent.appendChild(fiber.dom);
 	}
-	if (fiber.effectTag === "UPDATE") {
+	if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
 		// domがupdateしているのだから、fiber.alternateは必ず存在する
 		// biome-ignore lint/style/noNonNullAssertion: <explanation>
 		updateDom(domParent, fiber.alternate!.props, fiber.props);
 	}
 	if (fiber.effectTag === "DELETION") {
-		domParent.removeChild(fiber.dom);
+		// DOMノードを持つ子が見つかるまで子を辿る
+		const commitDeletion = (fiber: FiberNode, domParent: FiberNodeDOM) => {
+			if (fiber.dom != null) {
+				domParent.removeChild(fiber.dom);
+				return;
+			}
+			if (fiber.child != null) {
+				commitDeletion(fiber.child, domParent);
+			}
+			// フラグメントやnullを返す関数コンポーネントなどはchildがnullになる
+			// その場合は終了する
+		};
+		commitDeletion(fiber, domParent);
 	}
 
 	if (fiber.child != null) {
@@ -346,10 +386,6 @@ const render = (element: VirtualElement, container: Element | Text) => {
 	deletions = [];
 	nextUnitOfWork = wipRoot;
 };
-
-export function Fragment({ children }: { children: NodeChild[] }) {
-	return children;
-}
 
 export default {
 	Fragment,
