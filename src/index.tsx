@@ -1,7 +1,19 @@
 import miniReact from "./miniReact";
 
 function App(props: { name: string }) {
-	return <h2>Hi, {props.name}!</h2>;
+	const [state, setState] = miniReact.useState(0);
+	const handleClick = () => {
+		setState(state + 1);
+	};
+	return (
+		<>
+			{/*  差分解析(PLACEMENT,DELETION)を確認  */}
+			{state === 2 ? <div>count is 2</div> : null}
+			<button type="button" onClick={handleClick}>
+				Hi, {props.name}! Count: {state}
+			</button>
+		</>
+	);
 }
 
 const element = (

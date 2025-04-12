@@ -1,5 +1,9 @@
 // TODO: Optimization Type Description
 type NodeChild = string | VirtualElement;
+type Dispatch<T> = (value: T) => void;
+type SetStateAction<StateType> =
+	| StateType
+	| ((prevState: StateType) => StateType);
 
 /**
  * tsxで書かれた場合、ここで定義されたプロパティで型チェックが行われる
@@ -16,6 +20,10 @@ declare global {
 			};
 			h2: {
 				title?: string;
+			};
+			button: {
+				type: "button" | "submit" | "reset";
+				onClick?: () => void;
 			};
 			a: {
 				href: string;
@@ -59,16 +67,17 @@ type VirtualElement = {
 };
 
 type FiberNodeDOM = Element | Text;
-interface FiberNode<S = unknown> extends VirtualElement {
-	alternate: FiberNode<S> | null;
+// biome-ignore lint/suspicious/noExplicitAny: <explanation>
+interface FiberNode<StateType = any> extends VirtualElement {
+	alternate: FiberNode<StateType> | null;
 	dom: FiberNodeDOM | null;
 	effectTag?: string;
 	child: FiberNode | null;
 	parent: FiberNode | null;
 	sibling: FiberNode | null;
 	hooks?: {
-		state: S;
-		queue: S[];
+		state: StateType;
+		queue: StateType[];
 	}[];
 }
 
@@ -117,12 +126,7 @@ const createDom = (nodeType: string, fiber: FiberNode): FiberNodeDOM => {
 			? document.createTextNode("")
 			: document.createElement(nodeType);
 
-	const properties = Object.keys(fiber.props).filter(isVirtualElementProperty);
-
-	for (const property of properties) {
-		// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-		(dom as any)[property] = fiber.props[property];
-	}
+	updateDom(dom, {}, fiber.props);
 
 	return dom;
 };
@@ -132,53 +136,33 @@ const updateDom = (
 	prevProps: VirtualElementProps,
 	nextProps: VirtualElementProps,
 ) => {
-	const isNew =
-		(prev: VirtualElementProps, next: VirtualElementProps) => (key: string) =>
-			prev[key] !== next[key];
-	const isGone = (next: VirtualElementProps) => (key: string) => !(key in next);
-
-	// Remove old properties
-	const keysToRemove = Object.keys(prevProps)
-		.filter(isVirtualElementProperty)
-		.filter(isGone(nextProps));
-
-	for (const key of keysToRemove) {
-		// undefinedやnullをDOMに設定すると、stringのプロパティではstringでキャストされて、無効な値になることがある
-		// そのため、空文字を設定する
-		// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-		(dom as any)[key] = "";
-	}
-
-	const keysToUpdate = Object.keys(nextProps)
-		.filter(isVirtualElementProperty)
-		.filter(isNew(prevProps, nextProps));
-
-	for (const key of keysToUpdate) {
-		// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-		(dom as any)[key] = nextProps[key];
-	}
-
-	// Remove old or changed event handlers
-	const eventHandlers = Object.keys(prevProps)
-		.filter(isEventHandlerProperty)
-		.filter((key) => !(key in nextProps) || isNew(prevProps, nextProps)(key));
-	for (const key of eventHandlers) {
-		const eventName = key.toLowerCase().substring(2);
-		const eventListener = prevProps[key];
-		if (isEventListenerOrEventListenerObject(eventListener)) {
-			dom.removeEventListener(eventName, eventListener);
+	for (const [removePropKey, removePropValue] of Object.entries(prevProps)) {
+		if (isVirtualElementProperty(removePropKey)) {
+			// @ts-expect-error: Property 'removePropKey' does not exist
+			dom[removePropKey] = "";
+			continue;
+		}
+		if (
+			isEventHandlerProperty(removePropKey) &&
+			isEventListenerOrEventListenerObject(removePropValue)
+		) {
+			const eventType = removePropKey.toLowerCase().substring(2);
+			dom.removeEventListener(eventType, removePropValue);
 		}
 	}
-	// Add new event handlers
-	const newEventHandlers = Object.keys(nextProps)
-		.filter(isEventHandlerProperty)
-		.filter(isNew(prevProps, nextProps));
 
-	for (const key of newEventHandlers) {
-		const eventName = key.toLowerCase().substring(2);
-		const eventListener = nextProps[key];
-		if (isEventListenerOrEventListenerObject(eventListener)) {
-			dom.addEventListener(eventName, eventListener);
+	for (const [addPropKey, addPropValue] of Object.entries(nextProps)) {
+		if (isVirtualElementProperty(addPropKey)) {
+			// @ts-expect-error: Property 'addPropKey' does not exist
+			dom[addPropKey] = addPropValue;
+			continue;
+		}
+		if (
+			isEventHandlerProperty(addPropKey) &&
+			isEventListenerOrEventListenerObject(addPropValue)
+		) {
+			const eventType = addPropKey.toLowerCase().substring(2);
+			dom.addEventListener(eventType, addPropValue);
 		}
 	}
 };
@@ -186,9 +170,9 @@ const updateDom = (
 let nextUnitOfWork: FiberNode | null = null;
 let deletions: FiberNode[] = [];
 
-const reconcileChildren = (wipFiber: FiberNode, elements: VirtualElement[]) => {
+const reconcileChildren = (fiber: FiberNode, elements: VirtualElement[]) => {
 	let prevSibling: FiberNode | null = null;
-	const oldFiber: FiberNode | null = wipFiber.alternate?.child ?? null;
+	let oldFiber: FiberNode | null = fiber.alternate?.child ?? null;
 
 	for (let i = 0; i < elements.length || oldFiber != null; i += 1) {
 		const element = elements[i] ?? null;
@@ -201,14 +185,14 @@ const reconcileChildren = (wipFiber: FiberNode, elements: VirtualElement[]) => {
 			element.nodeType === oldFiber.nodeType;
 
 		// 古いファイバーと新しい要素が同じタイプの場合、DOMノードを保持し、新しいpropsで更新するだけ
-		if (sameType) {
+		if (sameType && oldFiber != null) {
 			newFiber = {
 				nodeType: oldFiber.nodeType,
 				props: element.props,
 				dom: oldFiber.dom,
 				child: null,
 				sibling: null,
-				parent: wipFiber,
+				parent: fiber,
 				alternate: oldFiber,
 				effectTag: "UPDATE",
 			};
@@ -221,28 +205,31 @@ const reconcileChildren = (wipFiber: FiberNode, elements: VirtualElement[]) => {
 				dom: null, // domはまだ作成されていないのでnull
 				child: null,
 				sibling: null,
-				parent: wipFiber,
+				parent: fiber,
 				alternate: null,
 				effectTag: "PLACEMENT",
 			};
 		}
 		// タイプが異なり、古いファイバーがある場合は、古いノードを削除する必要がある
 		if (oldFiber != null && !sameType) {
-			oldFiber.effectTag = "DELETION";
 			deletions.push(oldFiber);
+		}
+		if (oldFiber != null) {
+			oldFiber = oldFiber.sibling;
 		}
 
 		if (i === 0) {
-			wipFiber.child = newFiber;
-		} else {
-			// index0の時にnewFiberをprevSiblingに入れているので、nullではない
-			// biome-ignore lint/style/noNonNullAssertion: <explanation>
-			prevSibling!.sibling = newFiber;
+			fiber.child = newFiber;
+		} else if (prevSibling != null) {
+			prevSibling.sibling = newFiber;
 		}
 
 		prevSibling = newFiber;
 	}
 };
+
+let wipFiber: FiberNode | null = null;
+let hookIndex = 0;
 
 // ツリー全体のレンダリングが完了する前にブラウザが中断されうるので、実DOMへの反映は最後にやる
 const performUnitOfWork = (fiber: FiberNode) => {
@@ -250,6 +237,9 @@ const performUnitOfWork = (fiber: FiberNode) => {
 	switch (typeof nodeType) {
 		// 関数コンポーネントの場合
 		case "function": {
+			wipFiber = fiber;
+			hookIndex = 0;
+			wipFiber.hooks = [];
 			const child = nodeType(fiber.props);
 			const children = isVirtualElement(child)
 				? [child]
@@ -293,37 +283,26 @@ const performUnitOfWork = (fiber: FiberNode) => {
 let wipRoot: FiberNode | null = null;
 let currentRoot: FiberNode | null = null;
 
-const commitWork = (fiber: FiberNode) => {
-	let domParentFiber: FiberNode | null = fiber.parent;
-	// フラグメントや関数コンポーネントはDOMノードを持たないので、見つかるまで親を辿る
-	while (domParentFiber != null && domParentFiber.dom == null) {
-		domParentFiber = domParentFiber.parent;
+// フラグメントや関数コンポーネントはDOMノードを持たないので、見つかるまで親を辿る
+const findParentFiber = (fiber?: FiberNode): FiberNode | null => {
+	if (fiber == null) return null;
+	let parentFiber: FiberNode | null = fiber.parent;
+	while (parentFiber != null && parentFiber.dom == null) {
+		parentFiber = parentFiber.parent;
 	}
-	const domParent = domParentFiber?.dom;
+	return parentFiber;
+};
+
+const commitWork = (fiber: FiberNode) => {
+	const parentFiber = findParentFiber(fiber);
+	const domParent = parentFiber?.dom;
 	if (domParent == null) return;
 
 	if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
 		domParent.appendChild(fiber.dom);
 	}
 	if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
-		// domがupdateしているのだから、fiber.alternateは必ず存在する
-		// biome-ignore lint/style/noNonNullAssertion: <explanation>
-		updateDom(domParent, fiber.alternate!.props, fiber.props);
-	}
-	if (fiber.effectTag === "DELETION") {
-		// DOMノードを持つ子が見つかるまで子を辿る
-		const commitDeletion = (fiber: FiberNode, domParent: FiberNodeDOM) => {
-			if (fiber.dom != null) {
-				domParent.removeChild(fiber.dom);
-				return;
-			}
-			if (fiber.child != null) {
-				commitDeletion(fiber.child, domParent);
-			}
-			// フラグメントやnullを返す関数コンポーネントなどはchildがnullになる
-			// その場合は終了する
-		};
-		commitDeletion(fiber, domParent);
+		updateDom(fiber.dom, fiber.alternate?.props ?? {}, fiber.props);
 	}
 
 	if (fiber.child != null) {
@@ -334,7 +313,19 @@ const commitWork = (fiber: FiberNode) => {
 	}
 };
 
+const commitDeletion = (fiber: FiberNode) => {
+	const parentFiber = findParentFiber(fiber);
+	const domParent = parentFiber?.dom;
+	if (domParent != null && fiber.dom != null) {
+		domParent.removeChild(fiber.dom);
+	}
+};
+
 const commitRoot = () => {
+	// deletionsはcommitWorkの中でDOMから削除される
+	for (const deletion of deletions) {
+		commitDeletion(deletion);
+	}
 	if (wipRoot == null || wipRoot.child == null) return;
 	commitWork(wipRoot.child);
 	currentRoot = wipRoot;
@@ -387,8 +378,60 @@ const render = (element: VirtualElement, container: Element | Text) => {
 	nextUnitOfWork = wipRoot;
 };
 
+const useState = <
+	StateType extends Exclude<unknown, (...args: unknown[]) => unknown>,
+>(
+	initialState: StateType,
+): [StateType, Dispatch<SetStateAction<StateType>>] => {
+	const oldHook = wipFiber?.alternate?.hooks?.[hookIndex];
+	const hook: {
+		state: StateType;
+		queue: SetStateAction<StateType>[];
+	} = {
+		state: oldHook ? oldHook.state : initialState,
+		queue: [],
+	};
+
+	const actions = oldHook?.queue ?? [];
+	for (const action of actions) {
+		if (action instanceof Function) {
+			hook.state = action(hook.state);
+			continue;
+		}
+		hook.state = action;
+	}
+
+	const setState: Dispatch<SetStateAction<StateType>> = (action) => {
+		hook.queue.push(action);
+		if (currentRoot == null) return;
+		// 作業ループが新しいレンダリングを開始するように
+		wipRoot = {
+			nodeType: currentRoot.nodeType,
+			dom: currentRoot.dom,
+			child: null,
+			sibling: null,
+			parent: null,
+			props: currentRoot.props,
+			alternate: currentRoot,
+		};
+		// 次のレンダリングに備える
+		deletions = [];
+		nextUnitOfWork = wipRoot;
+	};
+
+	if (wipFiber?.hooks == null) {
+		// biome-ignore lint/style/noNonNullAssertion: <explanation>
+		wipFiber!.hooks = [];
+	}
+	wipFiber?.hooks.push(hook);
+	hookIndex++;
+
+	return [hook.state, setState];
+};
+
 export default {
 	Fragment,
 	createElement,
 	render,
+	useState,
 };
