@@ -25,6 +25,12 @@ declare global {
 				type: "button" | "submit" | "reset";
 				onClick?: () => void;
 			};
+			img: {
+				width?: number;
+				height?: number;
+				src: string;
+				alt: string;
+			};
 			a: {
 				href: string;
 			};
