@@ -5,3 +5,5 @@
 - [Reactを自作しよう](https://zenn.dev/akatsuki/articles/a2cbd26488fa151b828b)
 
 ついでにyarn PnPも使ってみた
+
+github pagesはiOSではおそらく表示されない(https://developer.mozilla.org/ja/docs/Web/API/Window/requestIdleCallback)
