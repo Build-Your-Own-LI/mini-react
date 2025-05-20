@@ -74,6 +74,16 @@ type VirtualElement = {
 
 type FiberNodeDOM = Element | Text;
 // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+interface Hook {
+  state?: any; // For useState
+  queue?: any[]; // For useState
+  callback?: () => (void | (() => void)); // For useEffect
+  deps?: unknown[]; // For useEffect
+  cleanup?: () => void; // For useEffect
+  effectCallback?: (() => (void | (() => void))) | null; // To signal commitWork
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: <explanation>
 interface FiberNode<StateType = any> extends VirtualElement {
 	alternate: FiberNode<StateType> | null;
 	dom: FiberNodeDOM | null;
@@ -81,10 +91,7 @@ interface FiberNode<StateType = any> extends VirtualElement {
 	child: FiberNode | null;
 	parent: FiberNode | null;
 	sibling: FiberNode | null;
-	hooks?: {
-		state: StateType;
-		queue: StateType[];
-	}[];
+	hooks?: Hook[];
 }
 
 const isVirtualElement = (element: unknown): element is VirtualElement =>
@@ -319,12 +326,38 @@ const commitWork = (fiber: FiberNode) => {
 	}
 };
 
+const runCleanups = (fiber: FiberNode | null) => {
+  if (!fiber) {
+    return;
+  }
+  if (fiber.hooks) {
+    fiber.hooks.forEach(hook => {
+      // Ensure it's an effect hook by checking for hook.callback,
+      // as useState hooks won't have a .callback property.
+      if (hook.callback && typeof hook.cleanup === 'function') {
+        hook.cleanup();
+      }
+    });
+  }
+  runCleanups(fiber.child); // Recursively clean up children
+};
+
 const commitDeletion = (fiber: FiberNode) => {
-	const parentFiber = findParentFiber(fiber);
-	const domParent = parentFiber?.dom;
-	if (domParent != null && fiber.dom != null) {
-		domParent.removeChild(fiber.dom);
-	}
+  runCleanups(fiber); // Run all cleanup functions for this fiber and its children
+
+  if (fiber.dom) {
+    // If the fiber has a DOM node, remove it from its parent DOM.
+    const parentDomProvider = findParentFiber(fiber.parent); // find the closest parent with a DOM node
+    const domParent = parentDomProvider?.dom;
+    if (domParent) {
+      domParent.removeChild(fiber.dom);
+    }
+  }
+  // If fiber.dom is null (e.g., for Function Components or Fragments),
+  // there's no DOM node to remove for this fiber itself.
+  // Its children that have DOM nodes should be in the `deletions` array
+  // and will be processed by `commitDeletion` when their turn comes.
+  // `runCleanups` has already handled their cleanup functions.
 };
 
 const commitRoot = () => {
@@ -384,6 +417,37 @@ const render = (element: VirtualElement, container: Element | Text) => {
 	nextUnitOfWork = wipRoot;
 };
 
+const runEffects = (fiber: FiberNode | null) => {
+  if (!fiber) {
+    return;
+  }
+
+  // Run effects on the current fiber
+  if (fiber.hooks) {
+    for (const hook of fiber.hooks) {
+      if (hook.callback && typeof hook.effectCallback === 'function') { // Check for callback to identify effect hooks
+        // Call previous cleanup function if it exists
+        if (typeof hook.cleanup === 'function') {
+          hook.cleanup();
+        }
+        // Execute the effect callback
+        const newCleanup = hook.effectCallback();
+        if (typeof newCleanup === 'function') {
+          hook.cleanup = newCleanup;
+        } else {
+          // If the effect doesn't return a function, there's no cleanup for this effect run
+          hook.cleanup = undefined;
+        }
+        hook.effectCallback = null; // Reset after running
+      }
+    }
+  }
+
+  // Recursively run effects for children and siblings
+  runEffects(fiber.child);
+  runEffects(fiber.sibling);
+};
+
 const useState = <
 	StateType extends Exclude<unknown, (...args: unknown[]) => unknown>,
 >(
@@ -440,4 +504,30 @@ export default {
 	createElement,
 	render,
 	useState,
+	useEffect,
+};
+
+const useEffect = (
+	callback: () => (void | (() => void)),
+	deps?: unknown[],
+) => {
+	const oldHook = wipFiber?.alternate?.hooks?.[hookIndex] as Hook | undefined;
+
+	const hasChangedDeps = oldHook?.deps
+		? !deps || deps.some((dep, i) => !Object.is(dep, oldHook?.deps?.[i]))
+		: true;
+
+	const hook: Hook = {
+		callback,
+		deps,
+		cleanup: oldHook?.cleanup,
+		effectCallback: hasChangedDeps ? callback : null,
+	};
+
+	if (wipFiber?.hooks == null) {
+		// biome-ignore lint/style/noNonNullAssertion: <explanation>
+		wipFiber!.hooks = [];
+	}
+	wipFiber?.hooks.push(hook);
+	hookIndex++;
 };
