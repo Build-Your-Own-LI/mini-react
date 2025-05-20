@@ -1,37 +1,53 @@
 import miniReact from "./miniReact";
 
-function App(props: { name: string }) {
-	const [state, setState] = miniReact.useState(0);
-	const handleClick = () => {
-		setState(state + 1);
-	};
-	return (
-		<>
-			{/*  差分解析(PLACEMENT,DELETION)を確認  */}
-			{state === 2 ? <div>{props.name} count is 2</div> : null}
-			<button type="button" onClick={handleClick}>
-				Count: {state}
-			</button>
-		</>
-	);
+// Ensure miniReact.useState and miniReact.useEffect are available
+const { useState, useEffect } = miniReact;
+
+function EffectLoggerComponent() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    console.log("EffectLoggerComponent mounted");
+    return () => {
+      console.log("EffectLoggerComponent unmounted");
+    };
+  }, []); // Runs once on mount and cleanup on unmount
+
+  useEffect(() => {
+    console.log(`EffectLoggerComponent count is: ${count}`);
+    return () => {
+      console.log(`EffectLoggerComponent cleanup for count: ${count}`);
+    };
+  }, [count]); // Runs on mount and when count changes
+
+  return (
+    <div>
+      <h2>Effect Logger Component</h2>
+      <p>Count: {count}</p>
+      <button type="button" onClick={() => setCount(prev => prev + 1)}>
+        Increment Count
+      </button>
+    </div>
+  );
 }
 
-const element = (
-	<>
-		<div id="foo">
-			<a href="https://github.com/Build-Your-Own-LI/mini-react">bar</a>
-			<b test="test" />
-			<h1 title="test">Hello World!</h1>
-			<img
-				src={`${import.meta.env.BASE_URL}miniReact.png`}
-				alt="test"
-				width={100}
-				height={100}
-			/>
-		</div>
-		<App name="mini-react" />
-	</>
-);
-// biome-ignore lint/style/noNonNullAssertion: <explanation>
-const container = document.getElementById("root")!;
-miniReact.render(element, container);
+function App() {
+  const [showLogger, setShowLogger] = useState(true);
+
+  return (
+    <div>
+      <h1>miniReact useEffect Test</h1>
+      <button type="button" onClick={() => setShowLogger(prev => !prev)}>
+        Toggle Logger Component
+      </button>
+      {showLogger && <EffectLoggerComponent />}
+    </div>
+  );
+}
+
+const container = document.getElementById("root");
+if (container) {
+  miniReact.render(<App />, container);
+} else {
+  console.error("Root container not found");
+}
