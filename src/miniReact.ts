@@ -339,7 +339,8 @@ const runCleanups = (fiber: FiberNode | null) => {
       }
     });
   }
-  runCleanups(fiber.child); // Recursively clean up children
+  runCleanups(fiber.child); // Recursively clean up child fibers
+  runCleanups(fiber.sibling); // Recursively clean up sibling fibers
 };
 
 const commitDeletion = (fiber: FiberNode) => {
